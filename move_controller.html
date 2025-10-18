@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Reachy Mini Choreography Builder</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three-urdf-loader@1.0.1/dist/URDFLoader.js"></script>
     <style>
         /* Pollen Robotics Color Palette */
         :root {
@@ -106,13 +108,12 @@
         .left-column .section:nth-child(2) h2 { color: var(--light-green); }
         .main-layout > .section:nth-child(2) h2 { color: var(--yellow-gold); }
         .main-layout > .section:nth-child(3) h2 { color: var(--pink); }
-        #videoFeed {
+        #robot-viewer {
             width: 100%;
-            height: 500px;
-            border: 3px solid var(--light-blue);
-            border-radius: 8px;
-            background: #000;
-            object-fit: contain;
+            height: 100%;
+            display: block;
+        }
+        #robot-viewer-container {
             box-shadow: 0 4px 12px rgba(59, 176, 209, 0.3);
         }
         .video-status, .chart-status {
@@ -472,9 +473,11 @@
         <!-- Left Column: Video + Look Pad + Head Pose -->
         <div class="left-column">
             <div class="section">
-                <h2>📹 3D Simulator View</h2>
-                <img id="videoFeed" src="" alt="Simulator feed">
-                <div id="videoStatus" class="video-status disconnected">Connecting...</div>
+                <h2>📹 3D Robot Viewer</h2>
+                <div id="robot-viewer-container" style="width: 100%; height: 500px; background: #222; border-radius: 8px; overflow: hidden;">
+                    <canvas id="robot-viewer"></canvas>
+                </div>
+                <div id="videoStatus" class="video-status disconnected">Loading 3D model...</div>
             </div>
 
             <div class="section">
@@ -837,22 +840,111 @@
             });
         });
 
-        // Video stream
-        function initVideoStream() {
-            const videoFeed = document.getElementById('videoFeed');
+        // 3D Robot Viewer Setup
+        let scene, camera, renderer, robotModel;
+        let controls; // For mouse camera control
+
+        function init3DViewer() {
+            const container = document.getElementById('robot-viewer-container');
             const videoStatus = document.getElementById('videoStatus');
-            videoFeed.src = `${serverUrl()}/api/video/stream`;
 
-            videoFeed.onload = () => {
-                videoStatus.textContent = 'Video stream connected ✓';
-                videoStatus.className = 'video-status connected';
-            };
+            // 1. The Scene: The "world" that holds everything
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x222222);
 
-            videoFeed.onerror = () => {
-                videoStatus.textContent = 'Video unavailable';
-                videoStatus.className = 'video-status disconnected';
-                setTimeout(initVideoStream, 5000);
-            };
+            // 2. The Camera: Your "eyes"
+            camera = new THREE.PerspectiveCamera(
+                75, // Field of view
+                container.clientWidth / container.clientHeight, // Aspect ratio
+                0.1, // Near clip
+                1000 // Far clip
+            );
+            camera.position.set(0.8, 0.8, 0.5); // Move camera back and up a bit
+            camera.lookAt(0, 0, 0.25); // Look at the robot's base
+
+            // 3. The Lights: So you can see the model
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(1, 1, 1);
+            scene.add(directionalLight);
+            const directionalLight2 = new THREE.DirectionalLight(0xffffff, 0.4);
+            directionalLight2.position.set(-1, -1, 0.5);
+            scene.add(directionalLight2);
+
+            // 4. The Renderer: The "painter" that draws on the canvas
+            renderer = new THREE.WebGLRenderer({
+                canvas: document.getElementById('robot-viewer'),
+                antialias: true
+            });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+
+            // Add grid helper for reference
+            const gridHelper = new THREE.GridHelper(2, 20, 0x444444, 0x222222);
+            scene.add(gridHelper);
+
+            // Handle window resize
+            window.addEventListener('resize', () => {
+                const width = container.clientWidth;
+                const height = container.clientHeight;
+                camera.aspect = width / height;
+                camera.updateProjectionMatrix();
+                renderer.setSize(width, height);
+            });
+
+            // Start the animation loop
+            animate();
+
+            // Load the robot model
+            loadRobot();
+        }
+
+        function loadRobot() {
+            const videoStatus = document.getElementById('videoStatus');
+            const loader = new THREE.URDFLoader();
+
+            // Try to load URDF from daemon
+            const urdfPath = `${serverUrl()}/api/urdf`;
+
+            videoStatus.textContent = 'Loading robot model...';
+            videoStatus.className = 'video-status';
+
+            loader.load(
+                urdfPath,
+                (robot) => {
+                    // The robot model is loaded!
+                    robotModel = robot;
+
+                    // Add the 3D model to your scene
+                    scene.add(robotModel);
+
+                    videoStatus.textContent = '3D model loaded ✓';
+                    videoStatus.className = 'video-status connected';
+
+                    console.log("Robot 3D model loaded!", robotModel);
+                    console.log("Available joints:", Object.keys(robotModel.joints));
+                },
+                (progress) => {
+                    // Loading progress
+                    const percent = Math.round((progress.loaded / progress.total) * 100);
+                    videoStatus.textContent = `Loading model... ${percent}%`;
+                },
+                (error) => {
+                    console.error("Error loading URDF:", error);
+                    videoStatus.textContent = 'Failed to load 3D model';
+                    videoStatus.className = 'video-status disconnected';
+
+                    // Retry after 5 seconds
+                    setTimeout(loadRobot, 5000);
+                }
+            );
+        }
+
+        // The animation loop: re-draws the scene 60x per second
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
         }
 
         // Look pad click-to-look functionality
@@ -977,6 +1069,7 @@
                     try {
                         const data = JSON.parse(event.data);
                         if (data.head_pose) {
+                            // Update chart
                             poseChart.data.datasets[0].data = [
                                 data.head_pose.x,
                                 data.head_pose.y,
@@ -986,8 +1079,36 @@
                                 data.head_pose.yaw
                             ];
                             poseChart.update('none'); // No animation for better performance
+
+                            // Update 3D model if loaded
+                            if (robotModel && robotModel.joints) {
+                                const toRad = (deg) => deg * (Math.PI / 180);
+
+                                // Update joints based on head pose
+                                // Note: Joint names depend on the URDF structure
+                                // Check console.log output to see exact names
+                                if (robotModel.joints['head_yaw']) {
+                                    robotModel.joints['head_yaw'].setJointValue(toRad(data.head_pose.yaw));
+                                }
+                                if (robotModel.joints['head_pitch']) {
+                                    robotModel.joints['head_pitch'].setJointValue(toRad(data.head_pose.pitch));
+                                }
+                                if (robotModel.joints['head_roll']) {
+                                    robotModel.joints['head_roll'].setJointValue(toRad(data.head_pose.roll));
+                                }
+
+                                // Update antenna positions if available
+                                if (data.antenna && data.antenna.left !== undefined && robotModel.joints['l_antenna']) {
+                                    robotModel.joints['l_antenna'].setJointValue(data.antenna.left);
+                                }
+                                if (data.antenna && data.antenna.right !== undefined && robotModel.joints['r_antenna']) {
+                                    robotModel.joints['r_antenna'].setJointValue(data.antenna.right);
+                                }
+                            }
                         }
-                    } catch (e) {}
+                    } catch (e) {
+                        console.error("WebSocket message error:", e);
+                    }
                 };
 
                 ws.onclose = () => {
@@ -1666,7 +1787,7 @@
 
         // Initialize
         loadMovesFromJSON();  // Load moves from JSON, which will call populateMoves()
-        initVideoStream();
+        init3DViewer();
         initLookPad();
         connectWebSocket();
         loadCurrentState();
@@ -1696,7 +1817,7 @@
 
         // Reinit on server change
         document.getElementById('serverUrl').addEventListener('change', () => {
-            initVideoStream();
+            init3DViewer();
             if (ws) ws.close();
             connectWebSocket();
             loadCurrentState();
